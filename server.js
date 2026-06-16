@@ -9,6 +9,14 @@ const { open } = require('sqlite');
 const app = express();
 let db;
 
+const LOG_FILE = path.join(__dirname, 'app.log');
+function log(level, msg, data) {
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const line = '[' + ts + '] [' + level + '] ' + msg + (data ? ' | ' + JSON.stringify(data) : '');
+    console.log(line);
+    fs.appendFile(LOG_FILE, line + '\n', () => {});
+}
+
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'Sanghviadmin2026';
 const SESSION_SECRET = crypto.randomBytes(16).toString('hex');
@@ -103,6 +111,7 @@ async function initDatabase() {
         await db.run(`INSERT INTO employees (emp_id, name, email, department) VALUES (?, ?, ?, ?)`, emp_id, name, email, department);
     }
     console.log(`Loaded ${seen.size} employees from users-sanghvi.xlsx`);
+    log('INFO', 'Server started', { employees: seen.size, db: 'compliance.db' });
 }
 
 app.get('/policy.pdf', (req, res) => {
@@ -147,11 +156,14 @@ app.post('/api/submit', async (req, res) => {
             q6 === 'Yes' ? 'Yes' : 'No',
             q7 === 'Yes' ? 'Yes' : 'No'
         );
+        log('SUBMIT', name + ' acknowledged policy', { emp_id: emp.emp_id, email, ip });
         res.send(successPage(name));
     } catch (err) {
         if (err.message && err.message.includes('UNIQUE constraint failed')) {
+            log('WARN', 'Duplicate submission attempt', { name });
             res.status(400).send(alreadyPage(name));
         } else {
+            log('ERROR', 'Submission failed', { name, error: err.message });
             console.error(err);
             res.status(500).send('Internal Server Error.');
         }
@@ -186,8 +198,10 @@ app.post('/admin/login', (req, res) => {
         const token = crypto.randomBytes(24).toString('hex');
         sessions.add(token);
         res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
+        log('INFO', 'Admin login', { username });
         res.redirect('/admin');
     } else {
+        log('WARN', 'Failed admin login attempt', { username });
         res.send(getLoginHTML('Invalid username or password.'));
     }
 });
@@ -196,6 +210,7 @@ app.get('/admin/logout', (req, res) => {
     const cookies = parseCookies(req);
     sessions.delete(cookies.admin_session);
     res.setHeader('Set-Cookie', 'admin_session=; Path=/; Max-Age=0');
+    log('INFO', 'Admin logout', {});
     res.redirect('/admin/login');
 });
 
@@ -234,6 +249,7 @@ app.get('/admin/export', requireAdmin, async (req, res) => {
     const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.setHeader('Content-Disposition', 'attachment; filename="AI_Policy_Compliance_Report.xlsx"');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    log('INFO', 'Admin exported Excel', { records: records.length });
     res.send(buffer);
 });
 
@@ -279,8 +295,10 @@ app.post('/admin/sync-roster', requireAdmin, async (req, res) => {
         let msg = '';
         if (changes.length > 0) msg += changes.join('<br>');
         else msg = 'Roster is up to date — no changes found.';
+        log('INFO', 'Sync roster completed', { changes: changes.length });
         res.redirect('/admin?msg=' + encodeURIComponent(msg.trim()));
     } catch (err) {
+        log('ERROR', 'Sync roster failed', { error: err.message });
         console.error('Sync error:', err);
         res.redirect('/admin?msg=' + encodeURIComponent('Error reading roster file.'));
     }
@@ -291,6 +309,7 @@ app.post('/admin/reset-submission', requireAdmin, async (req, res) => {
     if (!emp_id) return res.redirect('/admin?msg=' + encodeURIComponent('Missing employee ID.'));
     try {
         await db.run('DELETE FROM submissions WHERE emp_id = ?', emp_id);
+        log('INFO', 'Submission reset', { emp_id, name });
         res.redirect('/admin?msg=' + encodeURIComponent('Reset: ' + (name || emp_id) + ' can now resubmit.'));
     } catch (err) {
         console.error(err);
