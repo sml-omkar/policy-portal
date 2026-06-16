@@ -320,7 +320,7 @@ app.post('/admin/reset-submission', requireAdmin, async (req, res) => {
 });
 
 initDatabase().then(() => {
-    const PORT = process.env.PORT || 80;
+    const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
         console.log('Server: http://localhost:' + PORT);
         console.log('Admin: http://localhost:' + PORT + '/admin');
