@@ -990,12 +990,12 @@ tbody tr:hover td{background:#dce6f2!important}
         <h1>AI Governance &middot; Admin Panel</h1>
     </div>
     <div class="topbar-right">
-        <button class="topbar-btn add" onclick="showAddUser()">&#10010; Add User</button>
+        <button class="topbar-btn add" onclick="showAddUser()"> Add User</button>
         <form method="POST" action="/admin/sync-roster" style="display:inline">
-            <button type="submit" class="topbar-btn sync">&#128260; Sync Roster</button>
+            <button type="submit" class="topbar-btn sync"> Sync Roster</button>
         </form>
-        <a href="/admin/export" class="topbar-btn export">&#128229; Export Compliance</a>
-        <a href="/admin/export-users" class="topbar-btn export-users">&#128230; Export Users</a>
+        <a href="/admin/export" class="topbar-btn export"> Export Compliance</a>
+        <a href="/admin/export-users" class="topbar-btn export-users"> Export Users</a>
         <a href="/admin/logout" class="topbar-btn">&#10140; Logout</a>
     </div>
 </div>
