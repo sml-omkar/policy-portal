@@ -319,6 +319,20 @@ app.post('/admin/reset-submission', requireAdmin, async (req, res) => {
     }
 });
 
+app.post('/admin/remove-employee', requireAdmin, async (req, res) => {
+    const { emp_id, name } = req.body;
+    if (!emp_id) return res.redirect('/admin?msg=' + encodeURIComponent('Missing employee ID.'));
+    try {
+        await db.run('DELETE FROM submissions WHERE emp_id = ?', emp_id);
+        await db.run('DELETE FROM employees WHERE emp_id = ?', emp_id);
+        log('INFO', 'Employee removed', { emp_id, name });
+        res.redirect('/admin?msg=' + encodeURIComponent('Removed: ' + (name || emp_id) + ' deleted from DB. Sync roster to re-add from Excel.'));
+    } catch (err) {
+        console.error(err);
+        res.redirect('/admin?msg=' + encodeURIComponent('Error removing employee.'));
+    }
+});
+
 initDatabase().then(() => {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
@@ -809,8 +823,10 @@ function getAdminDashboardHTML(completed, pending, msg) {
                 : `<span class="badge badge-done">&#10003; ${r.submitted_at}</span>`
         }</td>
         <td class="td-actions">${
-            isPending ? ''
+            isPending
+            ? `<a href="#" onclick="event.stopPropagation();confirmRemove('${r.emp_id}','${escapeHtml(r.name).replace(/'/g, "\\'")}')" class="remove-link">Remove</a>`
             : `<a href="#" onclick="event.stopPropagation();confirmReset('${r.emp_id}','${escapeHtml(r.name).replace(/'/g, "\\'")}')" class="reset-link">Reset</a>`
+            + ` &nbsp; <a href="#" onclick="event.stopPropagation();confirmRemove('${r.emp_id}','${escapeHtml(r.name).replace(/'/g, "\\'")}')" class="remove-link">Remove</a>`
         }</td>
     </tr>`;
     }).join('');
@@ -875,6 +891,8 @@ tbody tr:hover td{background:#dce6f2!important}
 .td-actions{text-align:center}
 .reset-link{color:#b91c1c;font-size:0.72rem;font-weight:700;text-decoration:none;padding:3px 8px;border-radius:5px;transition:background .2s}
 .reset-link:hover{background:#fef2f2;text-decoration:underline}
+.remove-link{color:#64748b;font-size:0.72rem;font-weight:600;text-decoration:none;padding:3px 8px;border-radius:5px;transition:all .2s}
+.remove-link:hover{background:#fef2f2;color:#b91c1c;text-decoration:underline}
 .badge{padding:3px 10px;border-radius:20px;font-size:0.7rem;font-weight:700;display:inline-block;white-space:nowrap}
 .badge-pending{background:#fef3c7;color:#92400e}
 .badge-done{background:#dcfce7;color:#166534}
@@ -979,6 +997,17 @@ function confirmReset(empId, empName) {
         var form = document.createElement('form');
         form.method = 'POST';
         form.action = '/admin/reset-submission';
+        form.innerHTML = '<input name="emp_id" value="' + empId + '"><input name="name" value="' + empName + '">';
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function confirmRemove(empId, empName) {
+    if (confirm('Remove "' + empName + '" entirely from DB? Their submission data will be deleted. Sync roster later to re-add them from Excel.')) {
+        var form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/admin/remove-employee';
         form.innerHTML = '<input name="emp_id" value="' + empId + '"><input name="name" value="' + empName + '">';
         document.body.appendChild(form);
         form.submit();
