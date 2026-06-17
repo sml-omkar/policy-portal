@@ -73,6 +73,7 @@ async function initDatabase() {
         q4 TEXT DEFAULT 'No',
         q5 TEXT DEFAULT 'No',
         q6 TEXT DEFAULT 'No',
+        q7 TEXT DEFAULT 'No',
         FOREIGN KEY(emp_id) REFERENCES employees(emp_id)
       );
     `);
@@ -126,7 +127,7 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/submit', async (req, res) => {
-    const { empName, empEmail, client_ip, read_policy, q1, q2, q3, q4, q5, q6 } = req.body;
+    const { empName, empEmail, client_ip, read_policy, q1, q2, q3, q4, q5, q6, q7 } = req.body;
     const name = (empName || '').trim();
     if (!name) {
         return res.status(400).send(errorPage('Please enter your name.'));
@@ -144,7 +145,7 @@ app.post('/api/submit', async (req, res) => {
         const ip = (client_ip || '').trim() || (req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : req.ip);
         const ua = req.headers['user-agent'] || '';
         await db.run(
-            `INSERT INTO submissions (emp_id, submitted_at, email, ip_address, user_agent, read_policy, q1, q2, q3, q4, q5, q6) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO submissions (emp_id, submitted_at, email, ip_address, user_agent, read_policy, q1, q2, q3, q4, q5, q6, q7) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             emp.emp_id, timestamp, email, ip, ua,
             read_policy === 'Yes' ? 'Yes' : 'No',
             q1 === 'Yes' ? 'Yes' : 'No',
@@ -152,9 +153,10 @@ app.post('/api/submit', async (req, res) => {
             q3 === 'Yes' ? 'Yes' : 'No',
             q4 === 'Yes' ? 'Yes' : 'No',
             q5 === 'Yes' ? 'Yes' : 'No',
-            q6 === 'Yes' ? 'Yes' : 'No'
+            q6 === 'Yes' ? 'Yes' : 'No',
+            q7 === 'Yes' ? 'Yes' : 'No'
         );
-        log('SUBMIT', name + ' acknowledged policy', { emp_id: emp.emp_id, email, ip, ua: ua.substring(0,100), read_policy, q1, q2, q3, q4, q5, q6 });
+        log('SUBMIT', name + ' acknowledged policy', { emp_id: emp.emp_id, email, ip, ua: ua.substring(0,100), read_policy, q1, q2, q3, q4, q5, q6, q7 });
         res.send(successPage(name));
     } catch (err) {
         if (err.message && err.message.includes('UNIQUE constraint failed')) {
@@ -216,7 +218,7 @@ app.get('/admin/logout', (req, res) => {
 
 app.get('/admin', requireAdmin, async (req, res) => {
     const records = await db.all(`
-        SELECT e.emp_id, e.name, e.email AS emp_email, e.department, s.submitted_at, s.email AS submitted_email, s.ip_address, s.user_agent, s.read_policy, s.q1, s.q2, s.q3, s.q4, s.q5, s.q6
+        SELECT e.emp_id, e.name, e.email AS emp_email, e.department, s.submitted_at, s.email AS submitted_email, s.ip_address, s.user_agent, s.read_policy, s.q1, s.q2, s.q3, s.q4, s.q5, s.q6, s.q7
         FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
     `);
     const completed = records.filter(r => r.submitted_at !== null);
@@ -240,7 +242,8 @@ app.get('/admin/export', requireAdmin, async (req, res) => {
                 COALESCE(s.q3, 'No') AS [3. Human Review Required],
                 COALESCE(s.q4, 'No') AS [4. No Sensitive Info in Prompts],
                 COALESCE(s.q5, 'No') AS [5. License Reallocation],
-                COALESCE(s.q6, 'No') AS [6. Disciplinary Action]
+                COALESCE(s.q6, 'No') AS [6. Token Usage],
+                COALESCE(s.q7, 'No') AS [7. Disciplinary Action]
         FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
     `);
     const worksheet = xlsx.utils.json_to_sheet(records);
@@ -575,7 +578,8 @@ body{padding:14px}
                 <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q3" name="q3" value="Yes" required><div class="cb-box"></div></div><label for="q3"><strong>3.</strong> I will not share, distribute, or submit any AI-generated content internally or externally without first completing the mandatory human review prescribed by this policy.</label></div>
                 <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q4" name="q4" value="Yes" required><div class="cb-box"></div></div><label for="q4"><strong>4.</strong> I will not enter, upload, or reference sensitive information in any AI platform prompt, as defined in Section 7.2 of this policy.</label></div>
                 <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q5" name="q5" value="Yes" required><div class="cb-box"></div></div><label for="q5"><strong>5.</strong> My license may be subject to reallocation in the event that I fail to maintain the utilisation thresholds prescribed in Section 6, without regard to my seniority or organisational position.</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q6" name="q6" value="Yes" required><div class="cb-box"></div></div><label for="q6"><strong>6.</strong> I understand that breach of this policy may result in disciplinary action in accordance with applicable company policies and legal requirements.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q6" name="q6" value="Yes" required><div class="cb-box"></div></div><label for="q6"><strong>6.</strong> I will use the allocated AI platform tokens judiciously and responsibly, and will manage my usage in line with the prescribed token limits.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q7" name="q7" value="Yes" required><div class="cb-box"></div></div><label for="q7"><strong>7.</strong> I understand that breach of this policy may result in disciplinary action in accordance with applicable company policies and legal requirements.</label></div>
                 <input type="hidden" name="read_policy" id="readPolicyInput" value="No">
                 <input type="hidden" name="client_ip" id="clientIpInput" value="">
 
@@ -813,7 +817,7 @@ function getAdminDashboardHTML(completed, pending, msg) {
             time: r.submitted_at || 'N/A',
             read_policy: r.read_policy || 'No',
             q1: r.q1 || 'No', q2: r.q2 || 'No', q3: r.q3 || 'No', q4: r.q4 || 'No',
-            q5: r.q5 || 'No', q6: r.q6 || 'No'
+            q5: r.q5 || 'No', q6: r.q6 || 'No', q7: r.q7 || 'No'
         }).replace(/'/g, '&#39;');
         return `<tr class="${isPending ? 'row-pending' : 'row-done'}" data-name="${escapeHtml(r.name).toLowerCase()}" onclick="showDetail('${detail.replace(/"/g, '&quot;')}')" style="cursor:pointer">
         <td class="td-id">${r.emp_id}</td>
@@ -1049,7 +1053,8 @@ function showDetail(jsonStr) {
         { label: '3. Human Review Required', value: data.q3, cls: data.q3 === 'Yes' ? 'yes' : 'no' },
         { label: '4. No Sensitive Info in Prompts', value: data.q4, cls: data.q4 === 'Yes' ? 'yes' : 'no' },
         { label: '5. License Reallocation', value: data.q5, cls: data.q5 === 'Yes' ? 'yes' : 'no' },
-        { label: '6. Disciplinary Action', value: data.q6, cls: data.q6 === 'Yes' ? 'yes' : 'no' }
+        { label: '6. Token Usage', value: data.q6, cls: data.q6 === 'Yes' ? 'yes' : 'no' },
+        { label: '7. Disciplinary Action', value: data.q7, cls: data.q7 === 'Yes' ? 'yes' : 'no' }
     ];
     document.getElementById('modalBody').innerHTML = '<div class="detail-grid">' + items.map(function(i) {
         if (i.subhead) {
