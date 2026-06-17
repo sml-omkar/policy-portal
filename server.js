@@ -9,7 +9,7 @@ const { open } = require('sqlite');
 const app = express();
 let db;
 
-const LOG_FILE = path.join(__dirname, 'app.log');
+const LOG_FILE = '/var/log/policy-portal.log';
 function log(level, msg, data) {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
     const line = '[' + ts + '] [' + level + '] ' + msg + (data ? ' | ' + JSON.stringify(data) : '');
@@ -73,7 +73,6 @@ async function initDatabase() {
         q4 TEXT DEFAULT 'No',
         q5 TEXT DEFAULT 'No',
         q6 TEXT DEFAULT 'No',
-        q7 TEXT DEFAULT 'No',
         FOREIGN KEY(emp_id) REFERENCES employees(emp_id)
       );
     `);
@@ -91,8 +90,8 @@ async function initDatabase() {
     const rows = xlsx.utils.sheet_to_json(sheet, { header: 1 });
 
     const seen = new Set();
-    const maxResult = await db.get('SELECT MAX(CAST(SUBSTR(emp_id,4) AS INTEGER)) AS max_id FROM employees');
-    let nextIdx = (maxResult && maxResult.max_id) ? maxResult.max_id + 1 : 1;
+    const result = await db.get('SELECT MAX(CAST(SUBSTR(emp_id,4) AS INTEGER)) AS max_id FROM employees');
+    let nextIdx = (result && result.max_id) ? result.max_id + 1 : 1;
     for (const row of rows) {
         if (row[0] === 'Username' || !row[0]) continue;
         const name = row[0].toString().trim();
@@ -127,7 +126,7 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/submit', async (req, res) => {
-    const { empName, empEmail, client_ip, read_policy, q1, q2, q3, q4, q5, q6, q7 } = req.body;
+    const { empName, empEmail, client_ip, read_policy, q1, q2, q3, q4, q5, q6 } = req.body;
     const name = (empName || '').trim();
     if (!name) {
         return res.status(400).send(errorPage('Please enter your name.'));
@@ -145,7 +144,7 @@ app.post('/api/submit', async (req, res) => {
         const ip = (client_ip || '').trim() || (req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : req.ip);
         const ua = req.headers['user-agent'] || '';
         await db.run(
-            `INSERT INTO submissions (emp_id, submitted_at, email, ip_address, user_agent, read_policy, q1, q2, q3, q4, q5, q6, q7) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO submissions (emp_id, submitted_at, email, ip_address, user_agent, read_policy, q1, q2, q3, q4, q5, q6) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             emp.emp_id, timestamp, email, ip, ua,
             read_policy === 'Yes' ? 'Yes' : 'No',
             q1 === 'Yes' ? 'Yes' : 'No',
@@ -153,17 +152,16 @@ app.post('/api/submit', async (req, res) => {
             q3 === 'Yes' ? 'Yes' : 'No',
             q4 === 'Yes' ? 'Yes' : 'No',
             q5 === 'Yes' ? 'Yes' : 'No',
-            q6 === 'Yes' ? 'Yes' : 'No',
-            q7 === 'Yes' ? 'Yes' : 'No'
+            q6 === 'Yes' ? 'Yes' : 'No'
         );
-        log('SUBMIT', name + ' acknowledged policy', { emp_id: emp.emp_id, email, ip });
+        log('SUBMIT', name + ' acknowledged policy', { emp_id: emp.emp_id, email, ip, ua: ua.substring(0,100), read_policy, q1, q2, q3, q4, q5, q6 });
         res.send(successPage(name));
     } catch (err) {
         if (err.message && err.message.includes('UNIQUE constraint failed')) {
-            log('WARN', 'Duplicate submission attempt', { name });
+            log('WARN', 'Duplicate submission attempt', { name, email });
             res.status(400).send(alreadyPage(name));
         } else {
-            log('ERROR', 'Submission failed', { name, error: err.message });
+            log('ERROR', 'Submission failed', { name, email, error: err.message });
             console.error(err);
             res.status(500).send('Internal Server Error.');
         }
@@ -178,8 +176,10 @@ app.post('/api/verify-email', async (req, res) => {
     try {
         const emp = await db.get('SELECT name, emp_id FROM employees WHERE LOWER(TRIM(email)) = LOWER(?)', email.trim());
         if (emp) {
+            log('INFO', 'Email verified', { email, name: emp.name });
             res.json({ found: true, name: emp.name, emp_id: emp.emp_id });
         } else {
+            log('INFO', 'Email not found', { email });
             res.json({ found: false, error: 'Email not found in employee roster.' });
         }
     } catch (err) {
@@ -216,11 +216,12 @@ app.get('/admin/logout', (req, res) => {
 
 app.get('/admin', requireAdmin, async (req, res) => {
     const records = await db.all(`
-        SELECT e.emp_id, e.name, e.email AS emp_email, e.department, s.submitted_at, s.email AS submitted_email, s.ip_address, s.user_agent, s.read_policy, s.q1, s.q2, s.q3, s.q4, s.q5, s.q6, s.q7
+        SELECT e.emp_id, e.name, e.email AS emp_email, e.department, s.submitted_at, s.email AS submitted_email, s.ip_address, s.user_agent, s.read_policy, s.q1, s.q2, s.q3, s.q4, s.q5, s.q6
         FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
     `);
     const completed = records.filter(r => r.submitted_at !== null);
     const pending = records.filter(r => r.submitted_at === null);
+    log('INFO', 'Admin dashboard viewed', { total: records.length, completed: completed.length, pending: pending.length });
     res.send(getAdminDashboardHTML(completed, pending, req.query.msg || ''));
 });
 
@@ -234,13 +235,12 @@ app.get('/admin/export', requireAdmin, async (req, res) => {
                COALESCE(s.ip_address, '') AS [IP Address],
                COALESCE(s.user_agent, '') AS [Device Info],
                COALESCE(s.read_policy, 'No') AS [Read Policy Document],
-               COALESCE(s.q1, 'No') AS [1. Read & Understood Policy],
-               COALESCE(s.q2, 'No') AS [2. Dual Scoring Framework],
-               COALESCE(s.q3, 'No') AS [3. Responsible for AI Output],
-               COALESCE(s.q4, 'No') AS [4. Human Review Required],
-               COALESCE(s.q5, 'No') AS [5. No Sensitive Info in Prompts],
-               COALESCE(s.q6, 'No') AS [6. License Reallocation],
-               COALESCE(s.q7, 'No') AS [7. Disciplinary Action]
+                COALESCE(s.q1, 'No') AS [1. Dual Scoring Framework],
+                COALESCE(s.q2, 'No') AS [2. Personal Accountability],
+                COALESCE(s.q3, 'No') AS [3. Human Review Required],
+                COALESCE(s.q4, 'No') AS [4. No Sensitive Info in Prompts],
+                COALESCE(s.q5, 'No') AS [5. License Reallocation],
+                COALESCE(s.q6, 'No') AS [6. Disciplinary Action]
         FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
     `);
     const worksheet = xlsx.utils.json_to_sheet(records);
@@ -297,7 +297,8 @@ app.post('/admin/sync-roster', requireAdmin, async (req, res) => {
         let msg = '<strong>Sync complete</strong> — ' + totalChecked + ' employee(s) checked from roster.';
         if (changes.length > 0) msg += '<br><br>' + changes.join('<br>');
         else msg += '<br>No changes found — all records up to date.';
-        log('INFO', 'Sync roster completed', { checked: totalChecked, changes: changes.length });
+        log('INFO', 'Sync roster completed', { checked: totalChecked, updated: changes.filter(c => c.includes('—')).length, added: changes.filter(c => c.includes('(new)')).length });
+        if (changes.length > 0) changes.forEach(c => log('INFO', 'Sync detail', { change: c.replace(/<br>/g, '') }));
         res.redirect('/admin?msg=' + encodeURIComponent(msg.trim()));
     } catch (err) {
         log('ERROR', 'Sync roster failed', { error: err.message });
@@ -569,13 +570,12 @@ body{padding:14px}
                 <input type="hidden" name="empEmail" id="hiddenEmail" value="">
 
                 <div class="section-label">Policy Acknowledgement Items</div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q1" name="q1" value="Yes" required><div class="cb-box"></div></div><label for="q1"><strong>1.</strong> I confirm that I have read and understood the Enterprise AI Governance and License Management Policy in its entirety.</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q2" name="q2" value="Yes" required><div class="cb-box"></div></div><label for="q2"><strong>2.</strong> I acknowledge that my access to enterprise AI platforms is conditional upon the Dual Scoring Framework and maintaining active utilisation throughout the license period.</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q3" name="q3" value="Yes" required><div class="cb-box"></div></div><label for="q3"><strong>3.</strong> I acknowledge that I am solely responsible for every AI-generated output I generate, review, and distribute.</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q4" name="q4" value="Yes" required><div class="cb-box"></div></div><label for="q4"><strong>4.</strong> I acknowledge that AI-generated content must not be shared without mandatory human review.</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q5" name="q5" value="Yes" required><div class="cb-box"></div></div><label for="q5"><strong>5.</strong> I acknowledge that I will not enter sensitive information into any AI platform prompt (Section 7.2).</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q6" name="q6" value="Yes" required><div class="cb-box"></div></div><label for="q6"><strong>6.</strong> I acknowledge that my license may be reallocated if I fail to maintain utilisation thresholds (Section 6).</label></div>
-                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q7" name="q7" value="Yes" required><div class="cb-box"></div></div><label for="q7"><strong>7.</strong> I understand that breach of this policy may result in disciplinary action.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q1" name="q1" value="Yes" required><div class="cb-box"></div></div><label for="q1"><strong>1.</strong> My access to enterprise AI platforms is conditional upon satisfying the requirements of the Dual Scoring Framework and maintaining active, productive utilisation throughout the period of my license.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q2" name="q2" value="Yes" required><div class="cb-box"></div></div><label for="q2"><strong>2.</strong> I am solely and personally responsible for every AI-generated output that I generate, review, and distribute. The involvement of an AI platform does not transfer or reduce my accountability for the content.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q3" name="q3" value="Yes" required><div class="cb-box"></div></div><label for="q3"><strong>3.</strong> I will not share, distribute, or submit any AI-generated content internally or externally without first completing the mandatory human review prescribed by this policy.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q4" name="q4" value="Yes" required><div class="cb-box"></div></div><label for="q4"><strong>4.</strong> I will not enter, upload, or reference sensitive information in any AI platform prompt, as defined in Section 7.2 of this policy.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q5" name="q5" value="Yes" required><div class="cb-box"></div></div><label for="q5"><strong>5.</strong> My license may be subject to reallocation in the event that I fail to maintain the utilisation thresholds prescribed in Section 6, without regard to my seniority or organisational position.</label></div>
+                <div class="checkbox-group"><div class="cb-wrap"><input type="checkbox" id="q6" name="q6" value="Yes" required><div class="cb-box"></div></div><label for="q6"><strong>6.</strong> I understand that breach of this policy may result in disciplinary action in accordance with applicable company policies and legal requirements.</label></div>
                 <input type="hidden" name="read_policy" id="readPolicyInput" value="No">
                 <input type="hidden" name="client_ip" id="clientIpInput" value="">
 
@@ -813,7 +813,7 @@ function getAdminDashboardHTML(completed, pending, msg) {
             time: r.submitted_at || 'N/A',
             read_policy: r.read_policy || 'No',
             q1: r.q1 || 'No', q2: r.q2 || 'No', q3: r.q3 || 'No', q4: r.q4 || 'No',
-            q5: r.q5 || 'No', q6: r.q6 || 'No', q7: r.q7 || 'No'
+            q5: r.q5 || 'No', q6: r.q6 || 'No'
         }).replace(/'/g, '&#39;');
         return `<tr class="${isPending ? 'row-pending' : 'row-done'}" data-name="${escapeHtml(r.name).toLowerCase()}" onclick="showDetail('${detail.replace(/"/g, '&quot;')}')" style="cursor:pointer">
         <td class="td-id">${r.emp_id}</td>
@@ -1044,13 +1044,12 @@ function showDetail(jsonStr) {
         { label: 'Device', value: data.ua ? (data.ua.substring(0, 100) + (data.ua.length > 100 ? '...' : '')) : '—' },
         { label: 'Read Policy Doc', value: data.read_policy, cls: data.read_policy === 'Yes' ? 'yes' : 'no' },
         { label: '', subhead: 'Acknowledgement Items', value: '' },
-        { label: '1. Read & Understood', value: data.q1, cls: data.q1 === 'Yes' ? 'yes' : 'no' },
-        { label: '2. Dual Scoring Framework', value: data.q2, cls: data.q2 === 'Yes' ? 'yes' : 'no' },
-        { label: '3. Responsible for AI Output', value: data.q3, cls: data.q3 === 'Yes' ? 'yes' : 'no' },
-        { label: '4. Human Review Required', value: data.q4, cls: data.q4 === 'Yes' ? 'yes' : 'no' },
-        { label: '5. No Sensitive Info', value: data.q5, cls: data.q5 === 'Yes' ? 'yes' : 'no' },
-        { label: '6. License Reallocation', value: data.q6, cls: data.q6 === 'Yes' ? 'yes' : 'no' },
-        { label: '7. Disciplinary Action', value: data.q7, cls: data.q7 === 'Yes' ? 'yes' : 'no' }
+        { label: '1. Dual Scoring Framework', value: data.q1, cls: data.q1 === 'Yes' ? 'yes' : 'no' },
+        { label: '2. Personal Accountability', value: data.q2, cls: data.q2 === 'Yes' ? 'yes' : 'no' },
+        { label: '3. Human Review Required', value: data.q3, cls: data.q3 === 'Yes' ? 'yes' : 'no' },
+        { label: '4. No Sensitive Info in Prompts', value: data.q4, cls: data.q4 === 'Yes' ? 'yes' : 'no' },
+        { label: '5. License Reallocation', value: data.q5, cls: data.q5 === 'Yes' ? 'yes' : 'no' },
+        { label: '6. Disciplinary Action', value: data.q6, cls: data.q6 === 'Yes' ? 'yes' : 'no' }
     ];
     document.getElementById('modalBody').innerHTML = '<div class="detail-grid">' + items.map(function(i) {
         if (i.subhead) {
