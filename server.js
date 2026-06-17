@@ -85,6 +85,9 @@ async function initDatabase() {
     for (const col of ['email', 'ip_address', 'user_agent']) {
         try { await db.run(`ALTER TABLE submissions ADD COLUMN ${col} TEXT DEFAULT ''`); } catch (_) {}
     }
+    for (const col of ['q7']) {
+        try { await db.run(`ALTER TABLE submissions ADD COLUMN ${col} TEXT DEFAULT 'No'`); } catch (_) {}
+    }
 
     const wb = xlsx.readFile('users-sanghvi.xlsx');
     const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -904,16 +907,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#eef2f7;color:#1e293
 .topbar-left img{width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,0.1);padding:3px}
 .topbar-left h1{color:#fff;font-size:0.95rem;font-weight:600;letter-spacing:0.2px}
 .topbar-right{display:flex;align-items:center;gap:10px}
-.topbar-btn{background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.85);padding:7px 14px;border-radius:8px;text-decoration:none;font-size:0.78rem;font-weight:600;transition:all .2s;display:inline-flex;align-items:center;gap:5px}
+.topbar-btn{background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.85);padding:7px 14px;border-radius:8px;text-decoration:none;font-size:0.78rem;font-weight:600;transition:all .2s;display:inline-flex;align-items:center;gap:5px;border:none;cursor:pointer}
 .topbar-btn:hover{background:rgba(255,255,255,0.2);color:#fff}
-.topbar-btn.export{background:#15803d;color:#fff}
-.topbar-btn.export:hover{background:#166534}
-.topbar-btn.sync{background:#1d4ed8;color:#fff}
-.topbar-btn.sync:hover{background:#1e40af}
-.topbar-btn.add{background:#854d0e;color:#fff}
-.topbar-btn.add:hover{background:#713f12}
-.topbar-btn.export-users{background:#0f766e;color:#fff}
-.topbar-btn.export-users:hover{background:#115e59}
 .dashboard{max-width:1120px;margin:0 auto;padding:28px 20px;animation:fadeIn .4s ease-out}
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:24px}
 .stat-card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 2px 10px rgba(0,0,0,0.03);border:1px solid #edf2f7;transition:transform .2s,box-shadow .2s}
