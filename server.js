@@ -340,6 +340,54 @@ app.post('/admin/remove-employee', requireAdmin, async (req, res) => {
     }
 });
 
+app.post('/admin/add-employee', requireAdmin, async (req, res) => {
+    const { name, email, department } = req.body;
+    const empName = (name || '').trim();
+    if (!empName) {
+        return res.redirect('/admin?msg=' + encodeURIComponent('Error: Name is required.'));
+    }
+    try {
+        const existing = await db.get('SELECT emp_id FROM employees WHERE LOWER(TRIM(name)) = LOWER(?)', empName);
+        if (existing) {
+            return res.redirect('/admin?msg=' + encodeURIComponent('Error: "' + escapeHtml(empName) + '" already exists (ID: ' + existing.emp_id + ').'));
+        }
+        const result = await db.get('SELECT MAX(CAST(SUBSTR(emp_id,4) AS INTEGER)) AS max_id FROM employees');
+        let nextIdx = (result && result.max_id) ? result.max_id + 1 : 1;
+        const emp_id = 'SML' + String(nextIdx).padStart(3, '0');
+        await db.run('INSERT INTO employees (emp_id, name, email, department) VALUES (?, ?, ?, ?)', emp_id, empName, (email || '').trim(), (department || '').trim());
+        log('INFO', 'Employee added manually', { emp_id, name: empName, email: (email || '').trim(), department: (department || '').trim() });
+        res.redirect('/admin?msg=' + encodeURIComponent('Added: ' + escapeHtml(empName) + ' (' + emp_id + ')'));
+    } catch (err) {
+        log('ERROR', 'Add employee failed', { error: err.message });
+        console.error(err);
+        res.redirect('/admin?msg=' + encodeURIComponent('Error adding employee.'));
+    }
+});
+
+app.get('/admin/export-users', requireAdmin, async (req, res) => {
+    try {
+        const records = await db.all(`
+            SELECT e.emp_id AS [Employee ID], e.name AS [Employee Name],
+                   COALESCE(e.email, '') AS [Email ID],
+                   COALESCE(e.department, '') AS [Department],
+                   CASE WHEN s.submitted_at IS NOT NULL THEN 'COMPLIANT' ELSE 'PENDING' END AS [Status]
+            FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
+            ORDER BY e.emp_id
+        `);
+        const worksheet = xlsx.utils.json_to_sheet(records);
+        const workbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Employee Roster');
+        const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        res.setHeader('Content-Disposition', 'attachment; filename="Employee_Roster.xlsx"');
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        log('INFO', 'Admin exported employee roster', { records: records.length });
+        res.send(buffer);
+    } catch (err) {
+        log('ERROR', 'Export users failed', { error: err.message });
+        res.redirect('/admin?msg=' + encodeURIComponent('Error exporting roster.'));
+    }
+});
+
 initDatabase().then(() => {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
@@ -862,6 +910,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#eef2f7;color:#1e293
 .topbar-btn.export:hover{background:#166534}
 .topbar-btn.sync{background:#1d4ed8;color:#fff}
 .topbar-btn.sync:hover{background:#1e40af}
+.topbar-btn.add{background:#854d0e;color:#fff}
+.topbar-btn.add:hover{background:#713f12}
+.topbar-btn.export-users{background:#0f766e;color:#fff}
+.topbar-btn.export-users:hover{background:#115e59}
 .dashboard{max-width:1120px;margin:0 auto;padding:28px 20px;animation:fadeIn .4s ease-out}
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:24px}
 .stat-card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 2px 10px rgba(0,0,0,0.03);border:1px solid #edf2f7;transition:transform .2s,box-shadow .2s}
@@ -943,10 +995,12 @@ tbody tr:hover td{background:#dce6f2!important}
         <h1>AI Governance &middot; Admin Panel</h1>
     </div>
     <div class="topbar-right">
+        <button class="topbar-btn add" onclick="showAddUser()">&#10010; Add User</button>
         <form method="POST" action="/admin/sync-roster" style="display:inline">
             <button type="submit" class="topbar-btn sync">&#128260; Sync Roster</button>
         </form>
-        <a href="/admin/export" class="topbar-btn export">&#128229; Export Excel</a>
+        <a href="/admin/export" class="topbar-btn export">&#128229; Export Compliance</a>
+        <a href="/admin/export-users" class="topbar-btn export-users">&#128230; Export Users</a>
         <a href="/admin/logout" class="topbar-btn">&#10140; Logout</a>
     </div>
 </div>
@@ -993,6 +1047,32 @@ tbody tr:hover td{background:#dce6f2!important}
             <button class="modal-close" onclick="closeDetail()">&#10005;</button>
         </div>
         <div class="modal-body" id="modalBody"></div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="addUserOverlay" onclick="if(event.target===this)hideAddUser()">
+    <div class="modal" style="max-width:420px">
+        <div class="modal-head">
+            <h2>Add New Employee</h2>
+            <button class="modal-close" onclick="hideAddUser()">&#10005;</button>
+        </div>
+        <div class="modal-body">
+            <form method="POST" action="/admin/add-employee" id="addUserForm">
+                <div style="margin-bottom:14px">
+                    <label style="display:block;font-size:0.82rem;font-weight:600;color:#475569;margin-bottom:4px">Full Name *</label>
+                    <input type="text" name="name" required placeholder="e.g. John Doe" style="width:100%;padding:10px 12px;border:1.5px solid #d1d9e6;border-radius:10px;font-size:0.9rem;outline:none;transition:border .2s" onfocus="this.style.borderColor='#8b1a1a'" onblur="this.style.borderColor='#d1d9e6'">
+                </div>
+                <div style="margin-bottom:14px">
+                    <label style="display:block;font-size:0.82rem;font-weight:600;color:#475569;margin-bottom:4px">Email ID</label>
+                    <input type="email" name="email" placeholder="e.g. john.doe@sanghviglobal.com" style="width:100%;padding:10px 12px;border:1.5px solid #d1d9e6;border-radius:10px;font-size:0.9rem;outline:none;transition:border .2s" onfocus="this.style.borderColor='#8b1a1a'" onblur="this.style.borderColor='#d1d9e6'">
+                </div>
+                <div style="margin-bottom:18px">
+                    <label style="display:block;font-size:0.82rem;font-weight:600;color:#475569;margin-bottom:4px">Department</label>
+                    <input type="text" name="department" placeholder="e.g. Operations" style="width:100%;padding:10px 12px;border:1.5px solid #d1d9e6;border-radius:10px;font-size:0.9rem;outline:none;transition:border .2s" onfocus="this.style.borderColor='#8b1a1a'" onblur="this.style.borderColor='#d1d9e6'">
+                </div>
+                <button type="submit" style="background:linear-gradient(135deg,#8b1a1a 0,#b91c1c 100%);color:#fff;padding:12px;border:none;border-radius:10px;cursor:pointer;font-size:0.9rem;font-weight:700;width:100%;transition:opacity .2s" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">Add Employee</button>
+            </form>
+        </div>
     </div>
 </div>
 
@@ -1069,7 +1149,13 @@ function showDetail(jsonStr) {
 function closeDetail() {
     document.getElementById('modalOverlay').classList.remove('active');
 }
-document.addEventListener('keydown', function(e) { if(e.key === 'Escape') closeDetail(); });
+function showAddUser() {
+    document.getElementById('addUserOverlay').classList.add('active');
+}
+function hideAddUser() {
+    document.getElementById('addUserOverlay').classList.remove('active');
+}
+document.addEventListener('keydown', function(e) { if(e.key === 'Escape') { closeDetail(); hideAddUser(); } });
 </script>
 </body>
 </html>`;
