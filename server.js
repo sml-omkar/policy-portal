@@ -320,8 +320,11 @@ app.post('/admin/reset-submission', requireAdmin, async (req, res) => {
 });
 
 app.post('/admin/remove-employee', requireAdmin, async (req, res) => {
-    const { emp_id, name } = req.body;
+    const { emp_id, name, password } = req.body;
     if (!emp_id) return res.redirect('/admin?msg=' + encodeURIComponent('Missing employee ID.'));
+    if (password !== ADMIN_PASS) {
+        return res.redirect('/admin?msg=' + encodeURIComponent('Incorrect admin password — removal cancelled.'));
+    }
     try {
         await db.run('DELETE FROM submissions WHERE emp_id = ?', emp_id);
         await db.run('DELETE FROM employees WHERE emp_id = ?', emp_id);
@@ -1004,11 +1007,12 @@ function confirmReset(empId, empName) {
 }
 
 function confirmRemove(empId, empName) {
-    if (confirm('Remove "' + empName + '" entirely from DB? Their submission data will be deleted. Sync roster later to re-add them from Excel.')) {
+    var pw = prompt('Enter admin password to remove "' + empName + '":');
+    if (pw) {
         var form = document.createElement('form');
         form.method = 'POST';
         form.action = '/admin/remove-employee';
-        form.innerHTML = '<input name="emp_id" value="' + empId + '"><input name="name" value="' + empName + '">';
+        form.innerHTML = '<input name="emp_id" value="' + empId + '"><input name="name" value="' + empName + '"><input name="password" value="' + pw + '">';
         document.body.appendChild(form);
         form.submit();
     }
