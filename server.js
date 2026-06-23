@@ -9,7 +9,8 @@ const { open } = require('sqlite');
 const app = express();
 let db;
 
-const LOG_FILE = '/var/log/policy-portal.log';
+let LOG_FILE = '/var/log/policy-portal.log';
+try { fs.appendFileSync(LOG_FILE, ''); } catch (_) { LOG_FILE = path.join(__dirname, 'policy-portal.log'); fs.appendFileSync(LOG_FILE, ''); }
 function log(level, msg, data) {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
     const line = '[' + ts + '] [' + level + '] ' + msg + (data ? ' | ' + JSON.stringify(data) : '');
