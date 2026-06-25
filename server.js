@@ -59,7 +59,8 @@ async function initDatabase() {
         emp_id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         email TEXT DEFAULT '',
-        department TEXT DEFAULT ''
+        department TEXT DEFAULT '',
+        license TEXT DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS submissions (
         emp_id TEXT PRIMARY KEY,
@@ -81,6 +82,9 @@ async function initDatabase() {
 
     // Migrate old DB — add columns that may not exist
     for (const col of ['email', 'department']) {
+        try { await db.run(`ALTER TABLE employees ADD COLUMN ${col} TEXT DEFAULT ''`); } catch (_) {}
+    }
+    for (const col of ['license']) {
         try { await db.run(`ALTER TABLE employees ADD COLUMN ${col} TEXT DEFAULT ''`); } catch (_) {}
     }
     for (const col of ['email', 'ip_address', 'user_agent']) {
@@ -222,7 +226,7 @@ app.get('/admin/logout', (req, res) => {
 
 app.get('/admin', requireAdmin, async (req, res) => {
     const records = await db.all(`
-        SELECT e.emp_id, e.name, e.email AS emp_email, e.department, s.submitted_at, s.email AS submitted_email, s.ip_address, s.user_agent, s.read_policy, s.q1, s.q2, s.q3, s.q4, s.q5, s.q6, s.q7
+        SELECT e.emp_id, e.name, e.email AS emp_email, e.department, e.license, s.submitted_at, s.email AS submitted_email, s.ip_address, s.user_agent, s.read_policy, s.q1, s.q2, s.q3, s.q4, s.q5, s.q6, s.q7
         FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
     `);
     const completed = records.filter(r => r.submitted_at !== null);
@@ -235,6 +239,7 @@ app.get('/admin/export', requireAdmin, async (req, res) => {
     const records = await db.all(`
         SELECT e.emp_id AS [Employee ID], e.name AS [Employee Name],
                COALESCE(e.department, '') AS [Department],
+               COALESCE(e.license, '') AS [License],
                COALESCE(e.email, '') AS [Email ID],
                CASE WHEN s.submitted_at IS NOT NULL THEN 'COMPLIANT' ELSE 'PENDING' END AS [Status],
                COALESCE(s.submitted_at, 'N/A') AS [Date of Acknowledgement],
@@ -276,13 +281,16 @@ app.post('/admin/sync-roster', requireAdmin, async (req, res) => {
             totalChecked++;
             const email = row[1] ? row[1].toString().trim() : '';
             const department = row[2] ? row[2].toString().trim() : '';
-            const existing = await db.get('SELECT emp_id, email, department FROM employees WHERE LOWER(TRIM(name)) = LOWER(?)', name);
+            const license = row[3] ? row[3].toString().trim() : '';
+            const existing = await db.get('SELECT emp_id, email, department, license FROM employees WHERE LOWER(TRIM(name)) = LOWER(?)', name);
             if (existing) {
                 let detail = '';
                 const oldEmail = existing.email || '';
                 const oldDept = existing.department || '';
+                const oldLicense = existing.license || '';
                 const newEmail = email;
                 const newDept = department;
+                const newLicense = license;
                 if (newEmail !== oldEmail) {
                     if (detail) detail += '; ';
                     detail += 'email: "' + oldEmail + '" → "' + newEmail + '"';
@@ -291,14 +299,18 @@ app.post('/admin/sync-roster', requireAdmin, async (req, res) => {
                     if (detail) detail += '; ';
                     detail += 'dept: "' + oldDept + '" → "' + newDept + '"';
                 }
+                if (newLicense !== oldLicense) {
+                    if (detail) detail += '; ';
+                    detail += 'license: "' + oldLicense + '" → "' + newLicense + '"';
+                }
                 if (detail) {
-                    await db.run(`UPDATE employees SET email = ?, department = ? WHERE emp_id = ?`, newEmail, newDept, existing.emp_id);
+                    await db.run(`UPDATE employees SET email = ?, department = ?, license = ? WHERE emp_id = ?`, newEmail, newDept, newLicense, existing.emp_id);
                     changes.push(name + ' — ' + detail);
                 }
                 continue;
             }
             const emp_id = 'SML' + String(nextIdx++).padStart(3, '0');
-            await db.run(`INSERT INTO employees (emp_id, name, email, department) VALUES (?, ?, ?, ?)`, emp_id, name, email, department);
+            await db.run(`INSERT INTO employees (emp_id, name, email, department, license) VALUES (?, ?, ?, ?, ?)`, emp_id, name, email, department, license);
             changes.push('➕ ' + name + ' (new)');
         }
         let msg = '<strong>Sync complete</strong> — ' + totalChecked + ' employee(s) checked from roster.';
@@ -345,7 +357,7 @@ app.post('/admin/remove-employee', requireAdmin, async (req, res) => {
 });
 
 app.post('/admin/add-employee', requireAdmin, async (req, res) => {
-    const { name, email, department } = req.body;
+    const { name, email, department, license } = req.body;
     const empName = (name || '').trim();
     if (!empName) {
         return res.redirect('/admin?msg=' + encodeURIComponent('Error: Name is required.'));
@@ -358,8 +370,8 @@ app.post('/admin/add-employee', requireAdmin, async (req, res) => {
         const result = await db.get('SELECT MAX(CAST(SUBSTR(emp_id,4) AS INTEGER)) AS max_id FROM employees');
         let nextIdx = (result && result.max_id) ? result.max_id + 1 : 1;
         const emp_id = 'SML' + String(nextIdx).padStart(3, '0');
-        await db.run('INSERT INTO employees (emp_id, name, email, department) VALUES (?, ?, ?, ?)', emp_id, empName, (email || '').trim(), (department || '').trim());
-        log('INFO', 'Employee added manually', { emp_id, name: empName, email: (email || '').trim(), department: (department || '').trim() });
+        await db.run('INSERT INTO employees (emp_id, name, email, department, license) VALUES (?, ?, ?, ?, ?)', emp_id, empName, (email || '').trim(), (department || '').trim(), (license || '').trim());
+        log('INFO', 'Employee added manually', { emp_id, name: empName, email: (email || '').trim(), department: (department || '').trim(), license: (license || '').trim() });
         res.redirect('/admin?msg=' + encodeURIComponent('Added: ' + escapeHtml(empName) + ' (' + emp_id + ')'));
     } catch (err) {
         log('ERROR', 'Add employee failed', { error: err.message });
@@ -372,8 +384,9 @@ app.get('/admin/export-users', requireAdmin, async (req, res) => {
     try {
         const records = await db.all(`
             SELECT e.emp_id AS [Employee ID], e.name AS [Employee Name],
-                   COALESCE(e.email, '') AS [Email ID],
                    COALESCE(e.department, '') AS [Department],
+                   COALESCE(e.license, '') AS [License],
+                   COALESCE(e.email, '') AS [Email ID],
                    CASE WHEN s.submitted_at IS NOT NULL THEN 'COMPLIANT' ELSE 'PENDING' END AS [Status]
             FROM employees e LEFT JOIN submissions s ON e.emp_id = s.emp_id
             ORDER BY e.emp_id
@@ -861,6 +874,7 @@ function getAdminDashboardHTML(completed, pending, msg) {
             id: r.emp_id,
             name: r.name,
             dept: r.department || '',
+            license: r.license || '',
             email: r.emp_email || r.submitted_email || '',
             empEmail: r.emp_email || '',
             subEmail: r.submitted_email || '',
@@ -876,6 +890,7 @@ function getAdminDashboardHTML(completed, pending, msg) {
         <td class="td-name">${escapeHtml(r.name)}</td>
         <td class="td-email">${escapeHtml(r.emp_email || r.submitted_email || '')}</td>
         <td class="td-dept">${escapeHtml(r.department || '')}</td>
+        <td class="td-license">${escapeHtml(r.license || '')}</td>
         <td class="td-status">${
             isPending
                 ? '<span class="badge badge-pending">PENDING</span>'
@@ -942,6 +957,7 @@ tbody tr:hover td{background:#dce6f2!important}
 .td-name{font-weight:500}
 .td-email{font-size:0.78rem;color:#475569}
 .td-dept{font-size:0.78rem;color:#666}
+.td-license{font-size:0.78rem;color:#475569;font-weight:500}
 .td-status{}
 .td-actions{text-align:center}
 .reset-link{color:#b91c1c;font-size:0.72rem;font-weight:700;text-decoration:none;padding:3px 8px;border-radius:5px;transition:background .2s}
@@ -1025,11 +1041,11 @@ tbody tr:hover td{background:#dce6f2!important}
         <div class="table-wrap">
             <p style="padding:6px 14px;font-size:0.72rem;color:#94a3b8;border-bottom:1px solid #edf2f7">Click a row to view full submission details</p>
             <table>
-                <thead><tr><th>Emp ID</th><th>Name</th><th>Email</th><th>Department</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Emp ID</th><th>Name</th><th>Email</th><th>Department</th><th>License</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody id="tableBody">
                     ${pending.length ? renderRows(pending, true) : ''}
                     ${completed.length ? renderRows(completed, false) : ''}
-                    ${!pending.length && !completed.length ? '<tr><td colspan="6" class="placeholder">No employees found.</td></tr>' : ''}
+                    ${!pending.length && !completed.length ? '<tr><td colspan="7" class="placeholder">No employees found.</td></tr>' : ''}
                 </tbody>
             </table>
         </div>
@@ -1062,9 +1078,13 @@ tbody tr:hover td{background:#dce6f2!important}
                     <label style="display:block;font-size:0.82rem;font-weight:600;color:#475569;margin-bottom:4px">Email ID</label>
                     <input type="email" name="email" placeholder="e.g. john.doe@sanghviglobal.com" style="width:100%;padding:10px 12px;border:1.5px solid #d1d9e6;border-radius:10px;font-size:0.9rem;outline:none;transition:border .2s" onfocus="this.style.borderColor='#8b1a1a'" onblur="this.style.borderColor='#d1d9e6'">
                 </div>
-                <div style="margin-bottom:18px">
+                <div style="margin-bottom:14px">
                     <label style="display:block;font-size:0.82rem;font-weight:600;color:#475569;margin-bottom:4px">Department</label>
                     <input type="text" name="department" placeholder="e.g. Operations" style="width:100%;padding:10px 12px;border:1.5px solid #d1d9e6;border-radius:10px;font-size:0.9rem;outline:none;transition:border .2s" onfocus="this.style.borderColor='#8b1a1a'" onblur="this.style.borderColor='#d1d9e6'">
+                </div>
+                <div style="margin-bottom:18px">
+                    <label style="display:block;font-size:0.82rem;font-weight:600;color:#475569;margin-bottom:4px">License</label>
+                    <input type="text" name="license" placeholder="e.g. OpenAI Pro" style="width:100%;padding:10px 12px;border:1.5px solid #d1d9e6;border-radius:10px;font-size:0.9rem;outline:none;transition:border .2s" onfocus="this.style.borderColor='#8b1a1a'" onblur="this.style.borderColor='#d1d9e6'">
                 </div>
                 <button type="submit" style="background:linear-gradient(135deg,#8b1a1a 0,#b91c1c 100%);color:#fff;padding:12px;border:none;border-radius:10px;cursor:pointer;font-size:0.9rem;font-weight:700;width:100%;transition:opacity .2s" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">Add Employee</button>
             </form>
@@ -1105,7 +1125,8 @@ function filterTable(val) {
         const id = (tr.querySelector('.td-id')?.textContent || '').toLowerCase();
         const dept = (tr.querySelector('.td-dept')?.textContent || '').toLowerCase();
         const email = (tr.querySelector('.td-email')?.textContent || '').toLowerCase();
-        tr.style.display = (!q || name.includes(q) || id.includes(q) || dept.includes(q) || email.includes(q)) ? '' : 'none';
+        const license = (tr.querySelector('.td-license')?.textContent || '').toLowerCase();
+        tr.style.display = (!q || name.includes(q) || id.includes(q) || dept.includes(q) || email.includes(q) || license.includes(q)) ? '' : 'none';
     });
 }
 
@@ -1116,6 +1137,7 @@ function showDetail(jsonStr) {
     const items = [
         { label: 'Employee', value: data.name + ' (' + data.id + ')' },
         { label: 'Department', value: data.dept || '—' },
+        { label: 'License', value: data.license || '—' },
         { label: 'Roster Email', value: data.empEmail || '—' },
         { label: 'Submitted Email', value: data.subEmail || '—' },
         { label: 'Status', value: data.time === 'N/A' ? 'PENDING' : 'COMPLIANT', cls: data.time === 'N/A' ? '' : 'yes' },
